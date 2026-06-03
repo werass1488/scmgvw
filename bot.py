@@ -85,6 +85,10 @@ def fmt_dt_local(iso_or_dt) -> str:
 
 # ================== РАБОТА С БД ==================
 async def init_db():
+    db_dir = os.path.dirname(DB_PATH)
+    if db_dir:
+        os.makedirs(db_dir, exist_ok=True)
+        
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute("""
         CREATE TABLE IF NOT EXISTS giveaways (
@@ -150,11 +154,7 @@ async def get_giveaway():
             "start_at": r[6], "end_at": r[7]
         }
 
-async def get_ref_count(user_id: int) -> int:
-    async with aiosqlite.connect(DB_PATH) as db:
-        cur = await db.execute("SELECT COUNT(*) FROM referrals WHERE referrer_id = ?", (user_id,))
-        row = await cur.fetchone()
-        return row[0] if row else 0
+
 
 async def set_times_in_db(start_dt_utc: datetime | None = None, end_dt_utc: datetime | None = None):
     async with aiosqlite.connect(DB_PATH) as db:
@@ -206,12 +206,8 @@ def subscribe_keyboard() -> InlineKeyboardMarkup:
 # --- Динамический текст условий для юзера ---
 async def build_user_status_text(user_id: int, gw: dict) -> str:
     sub_ok = await is_subscribed(user_id)
-    ref_count = await get_ref_count(user_id)
     
     sub_status = "✅ Выполнено" if sub_ok else "❌ Не подписан"
-    ref_status = f"✅ Выполнено ({ref_count}/3)" if ref_count >= 3 else f"❌ Приглашено: {ref_count}/3 друзей"
-    
-    ref_link = f"https://t.me/{BOT_USERNAME}?start=ref_{user_id}"
     
     async with aiosqlite.connect(DB_PATH) as db:
         cur = await db.execute("SELECT id FROM participants WHERE tg_id=? AND giveaway_code=?", (user_id, GIVEAWAY_CODE))
@@ -222,17 +218,13 @@ async def build_user_status_text(user_id: int, gw: dict) -> str:
             f"🎉 <b>Вы успешно зарегистрированы в розыгрыше!</b>\n\n"
             f"• Ваш ID: <code>{user_id}</code>\n"
             f"• Всего призовых мест: {gw['prize_count']}\n"
-            f"• Завершение: {fmt_dt_local(gw['end_at'])}\n\n"
-            f"Вы можете продолжать приглашать друзей по вашей ссылке:\n<code>{ref_link}</code>"
+            f"• Завершение: {fmt_dt_local(gw['end_at'])}\n"
         )
         
     text = (
-        f"🏆 <b>Для участия в розыгрыше выполните 2 условия:</b>\n\n"
-        f"1️⃣ <b>Подписка на канал:</b> @{CHANNEL_USERNAME} — [ {sub_status} ]\n"
-        f"2️⃣ <b>Поделиться с 3 друзьями:</b> — [ {ref_status} ]\n\n"
-        f"🔗 <b>Ваша пригласительная ссылка:</b>\n<code>{ref_link}</code>\n\n"
-        f"<i>Отправьте ссылку 3 друзьям. Как только они запустят бота, условие будет засчитано. "
-        f"После выполнения нажмите кнопку «♻ Проверить условия» ниже.</i>"
+        f"🏆 <b>Для участия в розыгрыше выполните условие:</b>\n\n"
+        f"1️⃣ <b>Подписка на канал:</b> @{CHANNEL_USERNAME} — [ {sub_status} ]\n\n"
+        f"<i>Как только вы подпишетесь на канал, нажмите кнопку «♻ Проверить условия» ниже.</i>"
     )
     return text
 
@@ -350,17 +342,7 @@ async def cmd_start(m: Message, command: CommandObject = None):
         await m.answer("Ошибка: розыгрыш не найден.")
         return
 
-    # Обработка реферальной ссылки
-    if command and command.args and command.args.startswith("ref_"):
-        try:
-            referrer_id = int(command.args.split("_")[1])
-            if referrer_id != m.from_user.id:
-                async with aiosqlite.connect(DB_PATH) as db:
-                    await db.execute("INSERT OR IGNORE INTO referrals (referee_id, referrer_id) VALUES (?, ?)", 
-                                     (m.from_user.id, referrer_id))
-                    await db.commit()
-        except Exception:
-            pass
+    # Реферальная логика отключена
 
     status_word = calc_status(gw)
     
@@ -392,10 +374,9 @@ async def cb_check_sub(c: CallbackQuery):
         return
 
     sub_ok = await is_subscribed(c.from_user.id)
-    ref_count = await get_ref_count(c.from_user.id)
 
-    # Проверка измененного условия: подписка И минимум 3 реферала
-    if not sub_ok or ref_count < 3:
+    # Проверка условия: только подписка
+    if not sub_ok:
         text = await build_user_status_text(c.from_user.id, gw)
         try:
             if c.message.photo:
